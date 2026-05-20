@@ -1,8 +1,11 @@
 """
 YOLOv8-Manga Detector with SFX/artistic text support.
 
-Model: keremberke/yolov8m-manga-text-detection (HuggingFace)
-Weight URL: https://huggingface.co/keremberke/yolov8m-manga-text-detection/resolve/main/best.pt
+Model: ogkalu/manga-text-detector-yolov8s (HuggingFace)
+  - Public, no auth required
+  - YOLOv8s fine-tuned on 8400+ manga images
+
+Previously used keremberke/yolov8m-manga-text-detection (deleted from HF)
 
 Integrates into MIT pipeline as Detector.yolomanga without modifying any
 existing detector or the core text-reflow pipeline.
@@ -69,13 +72,16 @@ class YoloMangaDetector(OfflineDetector):
     _MODEL_MAPPING = {
         'model': {
             'url': (
-                'https://huggingface.co/keremberke/yolov8m-manga-text-detection'
-                '/resolve/main/best.pt'
+                'https://huggingface.co/ogkalu/manga-text-detector-yolov8s'
+                '/resolve/main/manga-text-detector.pt'
             ),
-            'hash': None,          # set after first download verification
             'file': 'yolov8m_manga.pt',
         }
     }
+
+    _HF_REPO_ID = 'ogkalu/manga-text-detector-yolov8s'
+    _HF_FILENAME = 'manga-text-detector.pt'
+    _LOCAL_FILENAME = 'yolov8m_manga.pt'
 
     # SFX-confidence boost: if YOLO conf < this but sfx_heuristic passes, keep
     SFX_CONF_BOOST_THRESHOLD = 0.25
@@ -85,6 +91,35 @@ class YoloMangaDetector(OfflineDetector):
     def __init__(self, *args, **kwargs):
         os.makedirs(self.model_dir, exist_ok=True)
         super().__init__(*args, **kwargs)
+
+    # ------------------------------------------------------------------
+    # Download via huggingface_hub (handles gated / auth models)
+    # ------------------------------------------------------------------
+
+    def _check_downloaded(self) -> bool:
+        return os.path.exists(self._get_file_path(self._LOCAL_FILENAME))
+
+    async def _download(self):
+        try:
+            from huggingface_hub import hf_hub_download
+        except ImportError:
+            raise RuntimeError(
+                'huggingface_hub is required to download the YOLOv8-manga model. '
+                'Run: pip install huggingface_hub'
+            )
+
+        dest = self._get_file_path(self._LOCAL_FILENAME)
+        os.makedirs(self.model_dir, exist_ok=True)
+        print(f'\nDownloading {self._HF_REPO_ID}/{self._HF_FILENAME} via huggingface_hub ...')
+        print('  (Set HF_TOKEN env var if the repo is gated)')
+        cached = hf_hub_download(
+            repo_id=self._HF_REPO_ID,
+            filename=self._HF_FILENAME,
+            local_dir=self.model_dir,
+        )
+        if os.path.abspath(cached) != os.path.abspath(dest):
+            shutil.move(cached, dest)
+        print(' -- Download complete!')
 
     async def _load(self, device: str):
         from ultralytics import YOLO
@@ -100,10 +135,11 @@ class YoloMangaDetector(OfflineDetector):
         del self.model
 
     # ------------------------------------------------------------------
-    # Core _detect — must return (textlines, raw_mask, mask)
+    # Core _infer — called by OfflineDetector._detect → ModelWrapper.infer
+    # must return (textlines, raw_mask, mask)
     # ------------------------------------------------------------------
 
-    async def _detect(
+    async def _infer(
         self,
         image: np.ndarray,
         detect_size: int,
