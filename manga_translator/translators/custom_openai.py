@@ -1332,6 +1332,11 @@ class CustomOpenAiTranslator(ConfigGPT, CommonTranslator):
             temperature=temperature,
             top_p=top_p,
             seed=seed,
+            # Chặn rò rỉ nhãn hệ thống NGAY TẦNG API (không chỉ tin prompt + regex
+            # hậu xử lý): model abliterated/Qwen hay tự phun </s>, <|im_end|>… để
+            # kết thúc sớm khi gặp từ nhạy cảm. Stop tokens cắt sạch tại nguồn,
+            # tiết kiệm token. KHÔNG đưa marker <|n|> vào đây (đó là token hợp lệ).
+            stop=["</s>", "<|im_end|>", "<|endoftext|>", "<|eot_id|>", "<|im_start|>"],
             extra_body=extra_body,
         )
 
