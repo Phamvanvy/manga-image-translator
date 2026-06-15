@@ -129,6 +129,39 @@ def _fix_realm_terms(src: str, trans: str, logger=None) -> str:
     return out
 
 
+# Tiếng CƯỜI/tượng thanh láy đôi mà model HAY để nguyên chữ Hán (không dịch được)
+# → khi đó cả segment vẫn dính CJK ⇒ _needs_vietnamese_retry bắt là "chưa dịch" và
+# (sau khi retry hết) REVERT cả câu về nguồn Hán. Map deterministic này (đặt TRƯỚC
+# bước check tiếng Việt) gỡ đúng phần tượng thanh còn sót → câu không bị revert.
+# Chỉ gồm LÁY ĐÔI/BA tiếng cười (không bao giờ là tên/từ thật) → an toàn thay thẳng.
+# Sắp DÀI→NGẮN để khớp 咯咯咯 trước 咯咯.
+_ONOMATOPOEIA_MAP = [
+    ('咯咯咯', 'khúc khích'), ('咯咯', 'khúc khích'),
+    ('嘻嘻嘻', 'hì hì'),       ('嘻嘻', 'hì hì'),
+    ('嘿嘿嘿', 'hề hề'),       ('嘿嘿', 'hề hề'),
+    ('呵呵呵', 'ha ha'),       ('呵呵', 'ha ha'),
+    ('哈哈哈', 'ha ha ha'),    ('哈哈', 'ha ha'),
+    ('哼哼', 'hừ hừ'),
+    ('嘤嘤嘤', 'hu hu'),       ('嘤嘤', 'hu hu'),
+    ('噗嗤', 'phì cười'),
+]
+
+
+def _fix_onomatopoeia(trans: str, logger=None) -> str:
+    """Thay tiếng cười/tượng thanh láy còn SÓT chữ Hán trong bản dịch bằng bản
+    tiếng Việt (vd 咯咯→khúc khích). Gọi TRƯỚC bước check tiếng Việt để câu vừa
+    có thoại Việt vừa dính 咯咯 không bị tưởng là "chưa dịch" rồi revert về nguồn."""
+    if not trans or not isinstance(trans, str):
+        return trans
+    out = trans
+    for zh, vi in _ONOMATOPOEIA_MAP:
+        if zh in out:
+            out = out.replace(zh, vi)
+            if logger:
+                logger.info(f'[onomatopoeia] "{zh}" → "{vi}" (tiếng cười còn sót chữ Hán).')
+    return out
+
+
 # ── GLOSSARY PER-TRUYỆN (tự học) ─────────────────────────────────────────────
 # Giữ NHẤT QUÁN xuyên suốt MỘT bộ truyện 3 thứ hay trôi giữa các chương: tên
 # riêng (nhân vật, môn phái, địa danh, công pháp), cách xưng hô, và cảnh giới.
@@ -1050,6 +1083,15 @@ class CustomOpenAiTranslator(ConfigGPT, CommonTranslator):
                 for _i in range(len(cleaned_translations)):
                     if cleaned_translations[_i] and cleaned_translations[_i].strip() != "‍":
                         cleaned_translations[_i] = _strip_wrapping_quotes(cleaned_translations[_i])
+
+                # Gỡ tiếng cười/tượng thanh láy còn sót chữ Hán (咯咯…) TRƯỚC khi xét
+                # tiếng Việt — nếu không, segment "khúc khích + thoại Việt" bị coi là
+                # chưa dịch rồi revert cả câu về nguồn Hán.
+                if _target_is_vietnamese(to_lang):
+                    for _i in range(len(cleaned_translations)):
+                        if cleaned_translations[_i] and cleaned_translations[_i].strip() != "‍":
+                            cleaned_translations[_i] = _fix_onomatopoeia(
+                                cleaned_translations[_i], self.logger)
 
                 if _target_is_vietnamese(to_lang):
                     non_vietnamese = [t for _i, t in enumerate(cleaned_translations)
