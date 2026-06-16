@@ -502,6 +502,7 @@ def _contains_watermark_text(text: str) -> bool:
         "twitter",
         "weibo",
         "fanbox",
+        "fansky",
         "patreon",
         "fantia",
         "danbooru",
@@ -514,7 +515,10 @@ def _contains_watermark_text(text: str) -> bool:
         or ".net" in compact
         or ".org" in compact
         or compact.endswith("com")
-        or "www." in compact
+        # "www" trần KHÔNG cần dấu chấm: OCR hay nuốt dấu "." và dán domain dính
+        # liền (vd "www.fansky.co" → "wwwfansky", "wwwbany") — ba chữ w liên tiếp
+        # gần như chỉ xuất hiện trong URL watermark, không có trong thoại manga Hán.
+        or "www" in compact
         or "http://" in compact
         or "https://" in compact
     )
@@ -1277,6 +1281,35 @@ class CustomOpenAiTranslator(ConfigGPT, CommonTranslator):
         singles = [[i] for i in range(n)]
         if n < 2:
             return singles
+
+        # ── Box từng vùng (keyed theo TEXT nguồn) do orchestrator stash trước khi dịch ──
+        # Dùng để CHẶN ép/hỏi-gộp khi hai segment kề nhau theo INDEX nhưng NẰM XA nhau
+        # trên trang: thư pháp tường + banner tiêu đề + bong bóng thoại bị OCR/textline
+        # _merge nối nhầm thành chuỗi "đều kết chữ Hán trần" → gộp sai, dồn cả bản dịch
+        # vào 1 vùng, bong bóng thành ZWJ (rỗng). Câu THẬT bị detector cắt giữa dòng thì
+        # hai mảnh luôn KỀ nhau (gap nhỏ) nên không bị chặn. Thiếu box → giữ hành vi cũ.
+        boxes = {}
+        try:
+            import manga_translator as _mt
+            boxes = getattr(_mt, "_VI_REGION_BOXES", None) or {}
+        except Exception:
+            boxes = {}
+
+        def _far_apart(qa: str, qb: str) -> bool:
+            ba = boxes.get((qa or '').strip())
+            bb = boxes.get((qb or '').strip())
+            if not ba or not bb:
+                return False  # thiếu box → an toàn: cho gộp như cũ
+            ax1, ay1, ax2, ay2 = ba
+            bx1, by1, bx2, by2 = bb
+            gap_x = max(0.0, max(ax1, bx1) - min(ax2, bx2))
+            gap_y = max(0.0, max(ay1, by1) - min(ay2, by2))
+            # Ngưỡng "kề" mirror _merge_cont_regions (render): 1.5× cạnh NGẮN của box nhỏ
+            # hơn, sàn 30px. Cột/cạnh dòng kề luôn lọt; 2 vùng cách cả nghìn px thì không.
+            near_thr = max(30.0, 1.5 * min(
+                min(ax2 - ax1, ay2 - ay1), min(bx2 - bx1, by2 - by1)))
+            return max(gap_x, gap_y) > near_thr
+
         cands = []
         forced = set()  # ép YES không cần LLM: A kết bằng chữ Hán trần = cắt giữa dòng
         for i in range(n - 1):
@@ -1296,6 +1329,15 @@ class CustomOpenAiTranslator(ConfigGPT, CommonTranslator):
             # caption độc lập đứng cạnh vùng khác — câu thật bị detector cắt hầu
             # như luôn dài hơn. Loại khỏi ứng viên để LLM không có cơ hội gộp nhầm.
             if sum(1 for c in a if _CHINESE_RE.match(c)) <= 4:
+                continue
+            # Hai vùng nằm XA nhau trên trang → KHÔNG phải câu bị cắt giữa dòng (dù cùng
+            # kết chữ Hán trần) → bỏ qua, để LLM dịch RIÊNG từng vùng (giữ thoại bong bóng,
+            # không dồn dịch sang vùng thư pháp/tiêu đề). Ca ông uống trà: banner + bong
+            # bóng cách anchor 1767px/2565px → trước đây bị ép gộp, bong bóng rỗng.
+            if _far_apart(queries[i], queries[i + 1]):
+                self.logger.info(
+                    f'[merge-llm] BỎ ép-gộp seg {i + 1}+{i + 2}: 2 vùng cách xa trên trang '
+                    f'(thư pháp/tiêu đề/bong bóng rời, không phải câu cắt dòng).')
                 continue
             cands.append(i)
             # TẤT ĐỊNH: A kết thúc bằng MỘT CHỮ HÁN TRẦN (không một dấu câu nào) →

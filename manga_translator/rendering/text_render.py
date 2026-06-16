@@ -1248,13 +1248,30 @@ def put_text_horizontal(font_size: int, text: str, width: int, height: int, alig
         return
 
     # make large canvas
+    # HEADROOM TRÊN cho dấu thanh 2 tầng (ắ/ầ/ễ/ộ…): font impact (Bangers/anger) vẽ
+    # dấu chồng cao tới ~1.4×font_size TRÊN baseline. Headroom cũ chỉ font_size+bg →
+    # baseline dòng đầu đặt quá cao → đỉnh dấu (char_place_y<0) bị max(0,…) CẮT ở mép
+    # canvas (ca SFX "BĂN" mất sắc). ĐO bitmap_top THẬT của mọi ký tự trong chuỗi
+    # (glyph đã cache nên rẻ), lấy max → chừa đúng chỗ, tự thích nghi mọi font/dấu.
+    max_top = font_size
+    for _ln in line_text_list:
+        for _c in _ln:
+            try:
+                _cd, _ = CJK_Compatibility_Forms_translate(_c, 0)
+                _bt = get_char_glyph(_cd, font_size, 0).bitmap_top
+                if _bt > max_top:
+                    max_top = _bt
+            except Exception:
+                pass
+    top_pad = max_top + bg_size * 3 + 2      # + chỗ cho viền (stroke) trên + lề an toàn
+    bot_pad = font_size + bg_size            # descender + stroke dưới (dư sẽ bị crop)
     canvas_w = max(line_width_list) + (font_size + bg_size) * 2
-    canvas_h = font_size * len(line_width_list) + spacing_y * (len(line_width_list) - 1) + (font_size + bg_size) * 2
+    canvas_h = top_pad + font_size * len(line_width_list) + spacing_y * (len(line_width_list) - 1) + bot_pad
     canvas_text = np.zeros((canvas_h, canvas_w), dtype=np.uint8)
     canvas_border = canvas_text.copy()
 
-    # pen (x, y)
-    pen_orig = [font_size + bg_size, font_size + bg_size]
+    # pen (x, y) — baseline dòng đầu hạ xuống top_pad để đỉnh dấu không vượt mép canvas.
+    pen_orig = [font_size + bg_size, top_pad]
     if reversed_direction:
         # right to left languages have to be rendered in the correct order (starting from right)
         # so that the white outline of characters dont go over black parts of neighbouring characters

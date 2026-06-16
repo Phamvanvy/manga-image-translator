@@ -257,7 +257,7 @@ def _bubble_interior_rect(img: np.ndarray, region) -> list | None:
         # 0.4 × cạnh ngắn: bóng MỜ (cạnh rò) thường có chữ lấp gần kín, biên thoáng
         # nhỏ là đủ; biên rộng khiến bub_in vẫn quá khổ → khối chữ căn giữa lệch ra
         # ngoài bóng (ca 052 tràn nhẹ). Cạnh CÓ viền thật không qua nhánh kẹp này.
-        _m = int(min(tw, th) * 0.3)
+        _m = int(min(tw, th) * 0.1)
         mx, my = _m, _m
         inner_mean = float(gray[filled > 0].mean())
 
@@ -492,18 +492,42 @@ def _scaled_box_for_floor(region, font_size: int, img: np.ndarray):
         # trí và thứ tự phải→trái như bản gốc, không phình thành khối ngang to
         # đè cột bên cạnh (đè nhau → _separate_blocks xáo hết vị trí).
         if getattr(region, '_col_keep', False):
+            # CAO TỐI ĐA của làn = footprint dọc GỐC của cụm cột (oh), trần cứng 0.92
+            # ảnh. TRƯỚC ĐÂY giữ font_size to nguyên (trần min(ảnh)/30 ở font-abs-cap
+            # quá LỎNG cho làn hẹp) rồi cho cột phình tới 0.92×ảnh → nhiều cột narration
+            # bị gộp 1 vùng ra THÁP 1-2 chữ/dòng cao gần kín trang, neo đỉnh ⇒ TRÀN VIỀN
+            # (ca 坊市地牢中 24 dòng/5178px, 当卓如婷点头 20 dòng). NAY: GHÌM cỡ chữ
+            # xuống đến khi N dòng (wrap trong làn) vừa trần cao → cột nằm gọn trong
+            # footprint gốc, nhiều chữ/dòng hơn, dễ đọc, KHÔNG tràn.
+            avail_h = min(0.92 * Himg, max(oh, line_h))
+            lane = min(0.45 * Wimg, max(ow, font_size * 3.2))
+            fs = max(1, int(font_size))
+            while fs > 1:
+                _lh = fs * (1.0 + text_render._line_spacing_frac())
+                _lns, _wds = text_render.calc_horizontal(
+                    fs, region.translation,
+                    max_width=int(lane), max_height=int(avail_h), language=lang)
+                if max(1, len(_lns)) * _lh + _lh * 0.14 <= avail_h:
+                    break
+                fs -= 2
+            # Cỡ vừa khít footprint → GHI vào region để render() raster ĐÚNG cỡ này
+            # (render warp temp_box theo dst_points; lệch cỡ↔box sẽ ép méo/squash). Van
+            # ghi đè ở resize_regions_to_font_size đã bỏ qua col-keep nên cỡ này giữ.
+            region.font_size = fs
+            font_size = fs
+            line_h = fs * (1.0 + text_render._line_spacing_frac())
             lane = min(0.45 * Wimg, max(ow, font_size * 3.2))
             lines, widths = text_render.calc_horizontal(
                 font_size, region.translation,
-                max_width=int(lane), max_height=int(0.92 * Himg), language=lang)
+                max_width=int(lane), max_height=int(avail_h), language=lang)
             n = max(1, len(lines))
             bw = max(8.0, min(lane, float(max(widths)) if widths else lane))
-            bh = max(8.0, min(0.92 * Himg, n * line_h + line_h * 0.14))
+            bh = max(8.0, min(avail_h, n * line_h + line_h * 0.14))
             poly = affinity.scale(poly0, xfact=bw / ow, yfact=bh / oh,
                                   origin=(minx + ow / 2.0, miny))
             logger.info(f'[col-keep] "{region.get_translation_for_rendering()[:18]}" '
                         f'cột {int(ow)}×{int(oh)} → làn {int(bw)}×{int(bh)} '
-                        f'neo đỉnh, {n} dòng')
+                        f'neo đỉnh, {n} dòng, fs={fs} (ghìm vừa cao ≤{int(avail_h)})')
             return _finalize_scaled_poly(poly, region, img, Wimg, Himg)
 
         # ── Nới ngang vùng DỌC HẸP (tuỳ chọn) ────────────────────────────────
@@ -1221,7 +1245,11 @@ def resize_regions_to_font_size(img: np.ndarray, text_regions: List['TextBlock']
             pass
 
         dst_points_list.append(dst_points)
-        region.font_size = int(target_font_size)
+        # Nhánh col-keep tự GHÌM cỡ chữ để cột vừa footprint dọc (đã set region.font_size
+        # trong _scaled_box_for_floor) → KHÔNG ghi đè bằng target_font_size (trần
+        # min(ảnh)/30 quá to cho làn hẹp) kẻo render raster ở cỡ to rồi warp thành tháp.
+        if not getattr(region, '_col_keep', False):
+            region.font_size = int(target_font_size)
 
     # ── Đồng bộ cỡ chữ BODY theo nhóm toàn trang (lưu ý 3: chữ to chữ nhỏ chênh) ──
     # Per-region auto-fit cho mỗi vùng MỘT cỡ tuỳ box dò được → cùng là thoại/dẫn

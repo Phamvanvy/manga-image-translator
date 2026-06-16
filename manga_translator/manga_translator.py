@@ -1091,6 +1091,24 @@ class MangaTranslator:
             if config.translator.translator != Translator.none:  
                 # 自动给 ChatGPT 加上下文，其他翻译器不改变
                 # Automatically add context to ChatGPT, no change for other translators
+                # Stash BOX từng vùng (keyed theo TEXT nguồn) cho merge-planner của
+                # translator (custom_openai._plan_sentence_merges) → chặn ép-gộp các
+                # segment kề-index nhưng NẰM XA nhau trên trang (thư pháp tường + banner
+                # tiêu đề + bong bóng thoại bị OCR/textline_merge nối nhầm → dồn dịch 1
+                # chỗ, bong bóng rỗng). Keyed theo text để sống sót qua bước lọc query
+                # rỗng (đổi index) ở translators/common.translate. Mọi lỗi → {} (an toàn).
+                try:
+                    import manga_translator as _mt
+                    _mt._VI_REGION_BOXES = {}
+                    _vb = {}
+                    for _r in ctx.text_regions:
+                        try:
+                            _vb[(_r.text or '').strip()] = tuple(float(v) for v in _r.xyxy)
+                        except Exception:
+                            pass
+                    _mt._VI_REGION_BOXES = _vb
+                except Exception:
+                    pass
                 texts = [region.text for region in ctx.text_regions]
                 translated_sentences = \
                     await self._dispatch_with_context(config, texts, ctx)
