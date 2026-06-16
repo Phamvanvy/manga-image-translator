@@ -54,6 +54,12 @@ _CONT_TAG_RE = re.compile(r"^\s*\[\s*cont[\w.]*\s*\]\s*", re.IGNORECASE)
 # KHÔNG phải ứng viên "bị cắt giữa chừng" cho pre-pass gộp câu.
 _CJK_TERMINAL_PUNCT = set('。．.!！?？…⋯~～—–-"\'”’」』】)）]')
 
+# Trợ từ / thán từ CUỐI CÂU (口气词): là chữ Hán nhưng KẾT THÚC câu (吧/吗/呢/啊/了…).
+# Loại khỏi luật "ép gộp khi A kết bằng chữ Hán trần": câu kết bằng trợ từ này đã
+# TRỌN, không phải bị cắt giữa dòng — ép gộp sẽ dính nhầm sang caption đứng sau
+# (vd "…还是放弃挣扎吧" | "予腿夹紧抵御龟头"). Các ca này trả về cho LLM tự quyết.
+_CJK_FINAL_PARTICLES = set('吧吗嘛呢啊呀哇啦哦喔噢咯咧喽唉呐罢了么嘞咩呗')
+
 # Cảnh giới tu tiên: map zh→vn để ENFORCE sau dịch. Model hay trượt (vd 结丹初期 →
 # "Trúc Cơ sơ kỳ") vì story context các trang trước nhắc "Trúc Cơ" liên tục — prompt
 # không đủ giữ. Vocabulary đóng nên sửa deterministic được.
@@ -525,6 +531,26 @@ def _clean_watermark_fragments(text: str) -> str:
     if _contains_watermark_text(text):
         return ""
     return _strip_generation_artifacts(text)
+
+
+def _watermark_only(text: str) -> bool:
+    """True nếu nguồn CHỈ là watermark/logo, KHÔNG kèm thoại CJK thực.
+
+    textline_merge của MIT đôi khi DÁN URL watermark dính liền câu thoại thành MỘT
+    vùng (vd "…gxracg.com啊~说了别射里面！！！"). _contains_watermark_text bắt được
+    watermark nhưng nếu xoá trắng CẢ vùng thì MẤT câu thoại → bong bóng trống.
+    Tách: bỏ token Latin/số/URL, phần CJK còn lại nếu là CỤM THOẠI thực (đủ dài,
+    hoặc kèm dấu cảm thán/kết câu) thì KHÔNG phải watermark thuần → giữ bản dịch."""
+    if not _contains_watermark_text(text):
+        return False
+    rest = re.sub(r"[A-Za-z0-9._:/~?\-]+", "", text or "")
+    n_cjk = len(_CHINESE_RE.findall(rest))
+    has_sentence_punct = bool(re.search(r"[。！？…!?]", rest))
+    if n_cjk >= 5:
+        return False                       # cụm CJK dài = thoại
+    if n_cjk >= 2 and has_sentence_punct:
+        return False                       # ngắn nhưng có dấu cảm thán/kết = thoại
+    return True                            # thuần logo/handle/URL
 
 
 # Dấu hiệu TIÊU ĐỀ/TRANG TRÍ thật: Latin/số (cả fullwidth), ngoặc, marker chương
@@ -1131,9 +1157,20 @@ class CustomOpenAiTranslator(ConfigGPT, CommonTranslator):
                 _store = _region_type_store()
                 for i in range(len(cleaned_translations)):
                     src = batch_queries[i] if i < len(batch_queries) else ""
-                    if _contains_watermark_text(src):
-                        # Always erase watermarks regardless of what model returned.
+                    if _contains_watermark_text(src) and (
+                            _watermark_only(src)
+                            or _is_effectively_empty(cleaned_translations[i])):
+                        # Watermark/logo THU\u1ea6N (ho\u1eb7c model c\u0169ng kh\u00f4ng ra c\u00e2u c\u00f3 ngh\u0129a)
+                        # \u2192 xo\u00e1 b\u1eb1ng ZWJ (v\u00f9ng \u0111\u00e3 inpaint, kh\u00f4ng render g\u00ec).
                         cleaned_translations[i] = "\u200d"
+                    elif _contains_watermark_text(src):
+                        # textline_merge D\u00c1N URL watermark d\u00ednh li\u1ec1n c\u00e2u tho\u1ea1i v\u00e0o M\u1ed8T
+                        # v\u00f9ng (vd "\u2026gxracg.com\u554a~\u8bf4\u4e86\u522b\u5c04\u91cc\u9762\uff01\uff01\uff01"). Model \u0111\u00e3 d\u1ecbch \u0111\u00fang
+                        # ph\u1ea7n tho\u1ea1i & b\u1ecf URL \u2192 GI\u1eee b\u1ea3n d\u1ecbch, KH\u00d4NG xo\u00e1 tr\u1eafng c\u1ea3 bong b\u00f3ng.
+                        self.logger.info(
+                            f'[watermark] segment {i + 1} URL d\u00ednh tho\u1ea1i '
+                            f'"{src.strip()[:24]}\u2026" \u2014 gi\u1eef b\u1ea3n d\u1ecbch, kh\u00f4ng xo\u00e1 c\u1ea3 v\u00f9ng.')
+                        cleaned_translations[i] = _ensure_terminal_punct(cleaned_translations[i])
                     elif i in decor_idx:
                         # Ch\u1eef trang tr\u00ed in tr\u00ean artwork (brand print "BALENCIAGA",
                         # m\u00e3 hi\u1ec7u\u2026): ngu\u1ed3n KH\u00d4NG c\u00f3 k\u00fd t\u1ef1 CJK n\u00e0o \u2192 kh\u00f4ng ph\u1ea3i tho\u1ea1i.
@@ -1241,6 +1278,7 @@ class CustomOpenAiTranslator(ConfigGPT, CommonTranslator):
         if n < 2:
             return singles
         cands = []
+        forced = set()  # ép YES không cần LLM: A kết bằng chữ Hán trần = cắt giữa dòng
         for i in range(n - 1):
             # Soi trên bản ĐÃ sửa lỗi OCR: "吧oo" (OCR của "吧……") phải được nhận
             # diện là đã KẾT câu, không thành ứng viên gộp với segment sau.
@@ -1260,18 +1298,33 @@ class CustomOpenAiTranslator(ConfigGPT, CommonTranslator):
             if sum(1 for c in a if _CHINESE_RE.match(c)) <= 4:
                 continue
             cands.append(i)
+            # TẤT ĐỊNH: A kết thúc bằng MỘT CHỮ HÁN TRẦN (không một dấu câu nào) →
+            # gần như chắc chắn là câu/đoạn dẫn truyện bị detector cắt GIỮA DÒNG (vd
+            # "…卷着细" | "碎的灵晶…" — tách đôi từ 细碎). Model nhỏ hay trả NO nhầm vì
+            # nửa đầu trông đã trọn, nên ÉP gộp luôn, KHÔNG hỏi LLM. (Nhãn/tên/cảnh
+            # giới ngắn ≤4 chữ đã bị lọc ở trên nên không lo gộp bừa caption rời.)
+            # NGOẠI LỆ: kết bằng TRỢ TỪ CUỐI CÂU (吧/吗/呢/啊/了…) = câu đã trọn →
+            # KHÔNG ép, trả LLM tự quyết (tránh dính caption đứng sau).
+            if _CHINESE_RE.match(a[-1]) and a[-1] not in _CJK_FINAL_PARTICLES:
+                forced.add(i)
         if not cands:
             return singles
-        qlines = []
-        for k, i in enumerate(cands, 1):
-            qlines.append(f'{k}. A=「{_fix_ocr_source((queries[i] or "").strip())}」'
-                          f' B=「{_fix_ocr_source((queries[i + 1] or "").strip())}」')
-        resp = await self._request_merge_plan('\n'.join(qlines))
-        confirmed = set()
-        for k, i in enumerate(cands, 1):
-            m = re.search(rf'^\s*{k}\s*[:.)\-]?\s*(YES|NO)\b', resp or '', re.IGNORECASE | re.MULTILINE)
-            if m and m.group(1).upper() == 'YES':
-                confirmed.add(i)
+        # Chỉ hỏi LLM các ứng viên CHƯA bị ép (kết bằng dấu phẩy/phẩy liệt kê… mơ hồ).
+        to_ask = [i for i in cands if i not in forced]
+        confirmed = set(forced)
+        if to_ask:
+            qlines = []
+            for k, i in enumerate(to_ask, 1):
+                qlines.append(f'{k}. A=「{_fix_ocr_source((queries[i] or "").strip())}」'
+                              f' B=「{_fix_ocr_source((queries[i + 1] or "").strip())}」')
+            resp = await self._request_merge_plan('\n'.join(qlines))
+            for k, i in enumerate(to_ask, 1):
+                m = re.search(rf'^\s*{k}\s*[:.)\-]?\s*(YES|NO)\b', resp or '', re.IGNORECASE | re.MULTILINE)
+                if m and m.group(1).upper() == 'YES':
+                    confirmed.add(i)
+        if forced:
+            self.logger.info(f'[merge-llm] ép gộp {len(forced)} cặp (A kết bằng chữ Hán '
+                             f'trần — cắt giữa dòng), không hỏi LLM cho các cặp này.')
         if not confirmed:
             return singles
         groups = []

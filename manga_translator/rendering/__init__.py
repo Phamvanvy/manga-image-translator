@@ -188,7 +188,10 @@ def _bubble_interior_rect(img: np.ndarray, region) -> list | None:
     # Phải bao được text và không phình quá mức (tránh bắt nhầm cả panel).
     if (ix2 - ix1) < tw * 0.9 or (iy2 - iy1) < th * 0.9:
         return None
-    if (ix2 - ix1) * (iy2 - iy1) > tw * th * 12:
+    # (3) Trần diện tích siết lại 12×→6× ô chữ: bong bóng thoại thật hiếm khi rộng
+    # hơn cụm chữ tới 6 lần diện tích; nới rộng hơn chỉ tạo cơ hội cho flood rò sang
+    # artwork (bóng mờ/bán trong suốt không viền) lọt qua, hộp phình → chữ tràn.
+    if (ix2 - ix1) * (iy2 - iy1) > tw * th * 6:
         return None
     # Bóng to bất thường so với CẢ TRANG → không phải bong bóng thoại. Trang nền
     # đen toàn chữ (trang dẫn truyện): flood phủ trọn nền đen rồi dừng ở LỀ TRẮNG
@@ -239,6 +242,43 @@ def _bubble_interior_rect(img: np.ndarray, region) -> list | None:
             region._bubble_kind = 'oval'
     except Exception:
         region._bubble_kind = 'oval'
+
+    # ── (2) KẸP hộp về sát cụm chữ trên cạnh KHÔNG có viền thật ────────────────
+    # Bong bóng mờ/bán trong suốt KHÔNG có viền mực cứng → flood RÒ sang vùng
+    # artwork cùng tông, hộp phình LỆCH khỏi bóng nhìn thấy → chữ căn giữa bị tràn
+    # ra ngoài bóng (ca 052/053). Với MỖI cạnh: nếu dải mỏng sát NGOÀI flood không
+    # tương phản với ruột (≠ viền thật) thì cạnh đó đã rò → kẹp về text-bbox + biên
+    # thoáng. Cạnh CÓ viền thật (tương phản ≥18) GIỮ nguyên → bóng kín to vẫn đặt
+    # chữ to như cũ. Kẹp luôn đảm bảo còn bao trọn text.
+    # BIÊN theo CẠNH NGẮN (min(tw,th)) — KHÔNG theo từng trục: narration NGANG dài
+    # (tw≫th, ca 053) mà lấy 0.6×tw thì biên ngang phình ~480px → clamp vô tác dụng,
+    # box vẫn rộng → chữ căn giữa lệch ra artwork. Lấy cạnh ngắn ⇒ biên gọn, đối xứng.
+    try:
+        # 0.4 × cạnh ngắn: bóng MỜ (cạnh rò) thường có chữ lấp gần kín, biên thoáng
+        # nhỏ là đủ; biên rộng khiến bub_in vẫn quá khổ → khối chữ căn giữa lệch ra
+        # ngoài bóng (ca 052 tràn nhẹ). Cạnh CÓ viền thật không qua nhánh kẹp này.
+        _m = int(min(tw, th) * 0.3)
+        mx, my = _m, _m
+        inner_mean = float(gray[filled > 0].mean())
+
+        def _has_border(strip):
+            return strip.size >= 16 and abs(float(strip.mean()) - inner_mean) >= 18.0
+
+        if not _has_border(gray[max(0, by1 - 3):by1, bx1:bx2 + 1]):      # cạnh TRÊN
+            iy1 = max(iy1, y1 - my)
+        if not _has_border(gray[by2 + 1:by2 + 4, bx1:bx2 + 1]):          # cạnh DƯỚI
+            iy2 = min(iy2, y2 + my)
+        if not _has_border(gray[by1:by2 + 1, max(0, bx1 - 3):bx1]):      # cạnh TRÁI
+            ix1 = max(ix1, x1 - mx)
+        if not _has_border(gray[by1:by2 + 1, bx2 + 1:bx2 + 4]):          # cạnh PHẢI
+            ix2 = min(ix2, x2 + mx)
+        # An toàn: clamp không bao giờ được cắt vào chính cụm chữ.
+        ix1, iy1 = min(ix1, x1), min(iy1, y1)
+        ix2, iy2 = max(ix2, x2), max(iy2, y2)
+        logger.info(f'[bubble-clamp] "{(getattr(region, "translation", "") or "")[:18]}" '
+                    f'hộp ruột → {ix2 - ix1}×{iy2 - iy1} (kẹp cạnh rò, biên {mx}×{my}px)')
+    except Exception:
+        pass
     return [ix1, iy1, ix2, iy2]
 
 
@@ -344,6 +384,18 @@ def _bubble_border_rect(img: np.ndarray, region) -> list | None:
             region._bubble_kind = 'oval'
     except Exception:
         region._bubble_kind = 'oval'
+
+    # ── CHẨN ĐOÁN (chưa clamp): đo border-box vs text-bbox để thiết kế guard ──
+    # _bubble_border_rect có thể bắt contour rộng hơn bóng thật (viền glow/bóng đổ
+    # của bóng mờ) → box phình → chữ tràn (ca 076.jpg). In tỉ lệ để chốt ngưỡng
+    # guard trước khi clamp (chỉ clamp khi over-detect BẤT THƯỜNG, không clamp mọi bóng).
+    try:
+        _ar = (bbw * bbh) / float(max(1, tw * th))
+        logger.info(f'[border-diag] "{(getattr(region, "translation", "") or "")[:18]}" '
+                    f'text {tw}×{th} → border {bbw}×{bbh} '
+                    f'(area×{_ar:.2f} w×{bbw / float(max(1, tw)):.2f} h×{bbh / float(max(1, th)):.2f})')
+    except Exception:
+        pass
     return [ix1, iy1, ix2, iy2]
 
 
@@ -626,6 +678,60 @@ def _meaningful_translation(t) -> bool:
         return bool(str(t).translate(_INVISIBLE_TRANS).strip())
     except Exception:
         return True
+
+
+_WM_SITE_TAGS = ('acg', 'pixiv', 'twitter', 'weibo', 'fanbox', 'patreon',
+                 'fantia', 'danbooru', 'dlsite', 'bilibili')
+
+
+def _is_watermark_line(text: str) -> bool:
+    """Một DÒNG OCR có phải watermark/handle/URL không (mirror logic translator)."""
+    if not isinstance(text, str) or not text.strip():
+        return False
+    c = re.sub(r"\s+", "", text.lower())
+    c = re.sub(r"[^a-z0-9._:/-]", "", c)
+    if re.search(r"p[i1l]x[i1l]v", c):
+        return True
+    return (any(t in c for t in _WM_SITE_TAGS) or ".com" in c or ".net" in c
+            or ".org" in c or c.endswith("com") or "www." in c
+            or "http://" in c or "https://" in c)
+
+
+# Cached_property hình học của TextBlock — pop sau khi sửa .lines để box tính lại.
+_GEOM_CACHE = ('xyxy', 'xywh', 'center', 'unrotated_polygons', 'unrotated_min_rect',
+               'min_rect', 'polygon_aspect_ratio', 'unrotated_size', 'aspect_ratio')
+
+
+def _strip_watermark_lines(text_regions):
+    """Bỏ DÒNG watermark khỏi HÌNH HỌC vùng khi nó bị textline_merge dán dính câu
+    thoại thật.
+
+    Ca 089: detector tách riêng "gxracg.com" và "啊~说了别射里面！！！" nhưng
+    textline_merge gộp thành MỘT vùng → box vùng ôm cả dải URL (rộng 787px) → chữ
+    thoại căn trong hộp rộng → lệch + tràn khỏi bong bóng. Bản dịch đã đúng (chỉ giữ
+    thoại), nhưng hình học vẫn bẩn. Ở đây: nếu vùng có CẢ dòng watermark LẪN dòng
+    thoại → loại các dòng watermark khỏi region.lines/texts + xoá cache hình học →
+    box co lại ôm đúng cụm thoại. Vùng watermark THUẦN để yên (đã thành ZWJ)."""
+    for r in text_regions:
+        try:
+            texts = list(getattr(r, 'texts', []) or [])
+            lines = np.asarray(r.lines)
+            # Chỉ xử khi texts ↔ lines song song & có ≥2 dòng (1 dòng thì không tách được).
+            if len(texts) < 2 or len(lines) != len(texts):
+                continue
+            keep = [i for i, t in enumerate(texts) if not _is_watermark_line(t)]
+            # Không có watermark, hoặc TOÀN watermark → để yên (không phải ca dính).
+            if len(keep) == len(texts) or not keep:
+                continue
+            r.lines = lines[keep]
+            r.texts = [texts[i] for i in keep]
+            for prop in _GEOM_CACHE:
+                r.__dict__.pop(prop, None)
+            logger.info(f'[wm-strip] bỏ {len(texts) - len(keep)} dòng watermark khỏi '
+                        f'geometry vùng "{(getattr(r, "translation", "") or "")[:18]}" '
+                        f'→ box ôm đúng thoại.')
+        except Exception:
+            continue
 
 
 def _merge_cont_regions(text_regions):
@@ -1387,6 +1493,9 @@ async def dispatch(
     ) -> np.ndarray:
 
     text_render.set_font(font_path)
+    # Bỏ dòng watermark dính vào geometry vùng thoại (textline_merge gộp URL + câu)
+    # TRƯỚC mọi bước tính box — kẻo box ôm cả dải URL → chữ lệch/tràn (ca 089).
+    _strip_watermark_lines(text_regions)
     # Gộp các vùng [cont] (một câu nguồn bị detector cắt thành nhiều vùng) TRƯỚC
     # khi lọc — vùng cont phải còn mặt ở đây để union hình học vào vùng anchor.
     _merge_cont_regions(text_regions)
