@@ -41,6 +41,40 @@ from .translators import (
 from .translators.common import ISO_639_1_TO_VALID_LANGUAGES
 from .colorization import dispatch as dispatch_colorization, prepare as prepare_colorization, unload as unload_colorization
 from .rendering import dispatch as dispatch_rendering, dispatch_eng_render, dispatch_eng_render_pillow
+from .rendering import _is_watermark_line, _meaningful_translation
+
+
+def _fill_watermark_mask(text_regions, mask, logger):
+    """Trùm TRỌN bbox vùng watermark vào mask trước khi inpaint.
+
+    Vùng watermark/URL chỉ được mask theo NÉT chữ (stroke-level) nên LaMa xoá để
+    sót glyph (vd "…ACG - www", "Pl"). Ở đây ta tô đặc cả hình chữ nhật bbox của
+    vùng (kèm padding ngang để nuốt glyph OCR bỏ sót cùng dòng) → xoá sạch cả cụm.
+    CHỈ áp cho vùng KHÔNG render gì (translation rỗng/ZWJ) VÀ text gốc là watermark
+    → không đụng tới bong bóng thoại."""
+    if mask is None:
+        return mask
+    h, w = mask.shape[:2]
+    filled = 0
+    for r in text_regions:
+        try:
+            if _meaningful_translation(getattr(r, 'translation', '') or ''):
+                continue  # còn chữ thật để render → không phải vùng bị xoá
+            if not _is_watermark_line(getattr(r, 'text', '') or ''):
+                continue
+            x1, y1, x2, y2 = (int(v) for v in r.xyxy)
+            padx = int((x2 - x1) * 0.10) + 6   # watermark là chữ NGANG → nới ngang nhiều hơn
+            pady = int((y2 - y1) * 0.30) + 4
+            x1 = max(0, x1 - padx); y1 = max(0, y1 - pady)
+            x2 = min(w, x2 + padx); y2 = min(h, y2 + pady)
+            if x2 > x1 and y2 > y1:
+                cv2.rectangle(mask, (x1, y1), (x2, y2), 255, thickness=-1)
+                filled += 1
+        except Exception:
+            continue
+    if filled:
+        logger.info(f'[wm-erase] trùm trọn bbox {filled} vùng watermark vào mask → xoá sạch.')
+    return mask
 
 # Will be overwritten by __main__.py if module is being run directly (with python -m)
 logger = logging.getLogger('manga_translator')
@@ -571,6 +605,9 @@ class MangaTranslator:
                 if not self.ignore_errors:  
                     raise 
                 ctx.mask = ctx.mask_raw if ctx.mask_raw is not None else np.zeros_like(ctx.img_rgb, dtype=np.uint8)[:,:,0] # Fallback to raw mask or empty mask
+
+        # Trùm trọn bbox vùng watermark vào mask để inpaint xoá SẠCH (không sót glyph).
+        ctx.mask = _fill_watermark_mask(ctx.text_regions, ctx.mask, logger)
 
         if self.verbose and ctx.mask is not None:
             inpaint_input_img = await dispatch_inpainting(Inpainter.none, ctx.img_rgb, ctx.mask, config.inpainter,config.inpainter.inpainting_size,
