@@ -1037,6 +1037,14 @@ def resize_regions_to_font_size(img: np.ndarray, text_regions: List['TextBlock']
                     cx = max(ix1, min(rcx, ix2))
                     cy = max(iy1, min(rcy, iy2))
                     bub_in = (ix1, iy1, ix2, iy2, cx, cy)
+                    # Bóng dò bằng floodfill-ruột HOẶC viền-Canny đều ĐÃ qua loạt kiểm
+                    # nghiêm ngặt (bao trọn text, ≤6× ô chữ / ≤0.35 trang, viền mực
+                    # tương phản ≥18, lồi-đặc) → đây là CHAT BOX THẬT, không phải bóng
+                    # ảo. Đánh dấu để van cứu "bóng ảo" (≤50% body target) ở
+                    # font-normalize KHÔNG thổi phồng nó: bóng nhỏ thì chữ vốn phải nhỏ
+                    # hơn body median; free-scale lên target sẽ tràn viền (ca 019:
+                    # bóng suy nghĩ fit=52 bị kéo lên 110 → khối cao 735px tràn bóng).
+                    region._real_bubble = True
             if is_manual and bub_in is None:
                 # ✏️ Vùng tay = CHAT BOX do người dùng vẽ. Coi CHÍNH box đó là khung
                 # chứa cố định: FIT chữ BÊN TRONG (calc_horizontal wrap nhiều dòng +
@@ -1397,13 +1405,17 @@ def resize_regions_to_font_size(img: np.ndarray, text_regions: List['TextBlock']
             else:
                 fit = _bubble_max_fit(_reg, _bub, _lng, eff_target,
                                       box_fit=getattr(_reg, '_box_fit', False))
-                # Van cứu "bóng ảo" (≤50% target) CHỈ cho bóng DÒ — floodfill/canny
-                # có thể vớ nhầm (vd vệt inpaint sót trên nền đen). BOX GỐC là box
-                # detector THẬT: fit nhỏ hơn body trang là vì box nhỏ thật (caption
-                # dải hẹp…) — cứu sang free-scale sẽ THỔI chữ lên target (52 → 118,
-                # 7 dòng phủ panel) phá layout; chỉ giữ sàn đọc fs_min.
+                # Van cứu "bóng ảo" (≤50% target): chỉ cho bóng dò CHƯA qua kiểm
+                # (không _real_bubble) — floodfill/canny có thể vớ nhầm (vd vệt
+                # inpaint sót trên nền đen). BÓNG THẬT (_real_bubble: đã qua loạt
+                # kiểm bao-text/diện-tích/viền-mực/lồi-đặc) và BOX GỐC (_box_fit)
+                # đều LOẠI khỏi van này: fit nhỏ hơn body trang là vì khung nhỏ THẬT
+                # (bóng suy nghĩ, caption hẹp…) — thổi lên target sẽ tràn viền (ca
+                # 019: 52 → 110, khối cao 735px tràn bóng). Vẫn cứu nếu fit < fs_min
+                # (chữ bé tới mức không đọc nổi) để giữ sàn đọc.
                 _phantom = fit < fs_min or (
                     not getattr(_reg, '_box_fit', False)
+                    and not getattr(_reg, '_real_bubble', False)
                     and target > fs_min and fit <= max(fs_min, int(target * 0.5)))
                 if _phantom:
                     # Bóng ảo / bóng-box quá bé: cứu — bỏ bubble-fit, free-scale ở
