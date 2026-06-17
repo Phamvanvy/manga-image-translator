@@ -320,6 +320,67 @@ def _parse_glossary_extract(out: str):
     return res
 
 
+# ── GLOSSARY DÙNG CHUNG (global, SQLite) ─────────────────────────────────────
+# Kho tham chiếu cho MỌI bộ. _mit_backend đặt env MIT_GLOSSARY_DB (đường dẫn tuyệt
+# đối tới glossary_global.db ở gốc repo) + MIT_GLOSSARY_USE_GLOBAL=1 khi user bật
+# "áp glossary chung" cho lần dịch này. Module glossary_store.py nằm CÙNG thư mục
+# với DB (gốc repo) → import được bằng cách chèn thư mục đó vào sys.path. Bọc
+# try/except: thiếu DB / thiếu module → coi như không có global, dịch chạy như cũ.
+_GLOSSARY_DB_ENV = "MIT_GLOSSARY_DB"
+_GLOSSARY_USE_GLOBAL_ENV = "MIT_GLOSSARY_USE_GLOBAL"
+
+
+def _global_glossary_enabled() -> bool:
+    return (os.environ.get(_GLOSSARY_USE_GLOBAL_ENV) or "").strip() in ("1", "true", "True")
+
+
+def _global_glossary_db() -> str | None:
+    p = (os.environ.get(_GLOSSARY_DB_ENV) or "").strip()
+    return p or None
+
+
+def _global_glossary_store():
+    """Trả module glossary_store (import lazy theo thư mục chứa DB) hoặc None."""
+    db = _global_glossary_db()
+    if not db:
+        return None
+    try:
+        import importlib
+        import sys as _sys
+        store_dir = os.path.dirname(os.path.abspath(db))
+        if store_dir and store_dir not in _sys.path:
+            _sys.path.insert(0, store_dir)
+        return importlib.import_module("glossary_store")
+    except Exception:
+        return None
+
+
+def _load_global_glossary_terms() -> list:
+    """list[(zh, vi)] các mục ĐÃ DUYỆT trong kho global, hoặc [] nếu không dùng/được."""
+    if not _global_glossary_enabled():
+        return []
+    store = _global_glossary_store()
+    if store is None:
+        return []
+    try:
+        return store.load_enabled_terms(_global_glossary_db())
+    except Exception:
+        return []
+
+
+def _merge_glossary_terms(per_bo, global_terms):
+    """Hợp nhất per-bộ ⊕ global. Per-bộ THẮNG khi trùng zh → bản dịch đã chốt của
+    bộ không bị global ghi đè. Chỉ thêm mục global có zh CHƯA có. Sort dài→ngắn."""
+    seen = {zh for zh, _ in per_bo}
+    merged = list(per_bo)
+    for zh, vi in (global_terms or []):
+        if zh and vi and zh not in seen:
+            seen.add(zh)
+            merged.append((zh, vi))
+    merged.sort(key=lambda t: len(t[0]), reverse=True)
+    return merged
+
+
 def _region_type_store() -> dict:
     """Dict d\u00f9ng chung gi\u1eefa translator v\u00e0 renderer (c\u00f9ng ti\u1ebfn tr\u00ecnh MIT), kho\u00e1 =
     text g\u1ed1c (CJK) \u0111\u00e3 strip \u2192 lo\u1ea1i tho\u1ea1i. Renderer tra theo region.text \u0111\u1ec3 ch\u1ecdn font."""
@@ -679,14 +740,21 @@ class CustomOpenAiTranslator(ConfigGPT, CommonTranslator):
         # _glossary_block bơm vào prompt; _glossary_terms enforce sau dịch;
         # _learn_pairs gom (nguồn→dịch) để atexit trích tên mới ghi lại vào file.
         self._glossary_path = _glossary_path()
-        self._glossary_terms, self._glossary_notes = _load_glossary(self._glossary_path)
+        _per_terms, self._glossary_notes = _load_glossary(self._glossary_path)
+        # Glossary dùng chung (opt-in): nạp các mục ĐÃ DUYỆT từ kho global, hợp nhất
+        # (per-bộ thắng khi trùng zh). _glossary_terms là danh sách HỢP NHẤT dùng cho
+        # cả prompt lẫn enforce. Giữ _global_terms riêng để RE-MERGE sau mỗi lần tự học.
+        self._global_terms = _load_global_glossary_terms()
+        self._glossary_terms = _merge_glossary_terms(_per_terms, self._global_terms)
         self._glossary_block = _glossary_prompt_block(self._glossary_terms, self._glossary_notes)
         self._learn_pairs: list = []
         self._pages_since_flush = 0
         if self._glossary_path:
+            _gmsg = (f' + {len(self._global_terms)} mục global'
+                     if self._global_terms else '')
             self.logger.info(
                 f'[glossary] Bộ truyện: {self._glossary_path} '
-                f'({len(self._glossary_terms)} mục đã chốt) — tự cập nhật mỗi '
+                f'({len(_per_terms)} mục đã chốt{_gmsg}) — tự cập nhật mỗi '
                 f'{self._GLOSSARY_FLUSH_EVERY} ảnh.')
             atexit.register(self._flush_glossary_learning)
 
@@ -723,22 +791,47 @@ class CustomOpenAiTranslator(ConfigGPT, CommonTranslator):
 
     def _merge_learned_into_glossary(self, learned):
         """Ghi thêm các mục MỚI (chưa có trong file) rồi RELOAD terms + prompt
-        block để các ảnh sau dùng ngay. Trả số mục mới đã thêm."""
+        block để các ảnh sau dùng ngay. Đồng thời đẩy mục học được lên kho GLOBAL
+        ở trạng thái CHỜ DUYỆT (enabled=0) — user duyệt sau mới áp cho bộ khác.
+        Trả số mục mới đã thêm vào file per-bộ."""
         path = self._glossary_path
         existing_terms, _ = _load_glossary(path)
         existing_zh = {zh for zh, _ in existing_terms}
         new_terms = [(zh, vi) for zh, vi in learned if zh not in existing_zh]
+        # Đẩy lên global (chờ duyệt) — không phụ thuộc new_terms vì zh có thể đã có
+        # ở per-bộ nhưng CHƯA có trên global. learn_pending tự khử trùng theo zh.
+        self._push_learned_to_global(learned)
         if not new_terms:
             return 0
         _append_glossary_terms(path, new_terms)
-        # Reload từ file (gộp cả mục người dùng sửa tay) → áp ngay cho ảnh kế.
-        self._glossary_terms, self._glossary_notes = _load_glossary(path)
+        # Reload từ file (gộp cả mục người dùng sửa tay) + RE-MERGE global → áp ngay.
+        _per_terms, self._glossary_notes = _load_glossary(path)
+        self._glossary_terms = _merge_glossary_terms(_per_terms, self._global_terms)
         self._glossary_block = _glossary_prompt_block(self._glossary_terms, self._glossary_notes)
         preview = ', '.join(f'{zh}→{vi}' for zh, vi in new_terms[:12])
         self.logger.info(
             f'[glossary] +{len(new_terms)} mục mới → {path}: {preview}'
             + ('…' if len(new_terms) > 12 else ''))
         return len(new_terms)
+
+    def _push_learned_to_global(self, learned):
+        """Đẩy các cặp tự học lên kho global ở trạng thái CHỜ DUYỆT (enabled=0).
+        Nguồn = tên gốc bộ (thư mục cha của glossary.txt). Không bật được global /
+        lỗi DB → bỏ qua êm, không ảnh hưởng luồng dịch."""
+        if not learned or not _global_glossary_enabled():
+            return
+        store = _global_glossary_store()
+        if store is None:
+            return
+        try:
+            source = None
+            if self._glossary_path:
+                source = os.path.basename(os.path.dirname(os.path.abspath(self._glossary_path)))
+            n = store.learn_pending(_global_glossary_db(), learned, source=source)
+            if n:
+                self.logger.info(f'[glossary] +{n} mục → kho GLOBAL (chờ duyệt).')
+        except Exception as e:
+            self.logger.warning(f'[glossary] bỏ qua đẩy global ({e}).')
 
     async def _maybe_flush_glossary(self, force: bool = False):
         """Gọi sau mỗi ảnh. Flush khi đủ _GLOSSARY_FLUSH_EVERY ảnh (hoặc force).
