@@ -848,12 +848,17 @@ class CustomOpenAiTranslator(ConfigGPT, CommonTranslator):
                 return
             messages = _glossary_extract_messages(chosen)
             extra_body = {"chat_template_kwargs": {"enable_thinking": False}}
-            resp = await self.client.chat.completions.create(
-                model=self.model or CUSTOM_OPENAI_MODEL, messages=messages,
-                max_tokens=1024, temperature=0, top_p=1.0,
-                seed=self._SEED if self._DETERMINISTIC else None,
-                extra_body=extra_body,
-            )
+            kwargs = {
+                "model": self.model or CUSTOM_OPENAI_MODEL,
+                "messages": messages,
+                "max_tokens": 1024,
+                "temperature": 0,
+                "top_p": 1.0,
+                "extra_body": extra_body,
+            }
+            if self._DETERMINISTIC:
+                kwargs["seed"] = self._SEED
+            resp = await self.client.chat.completions.create(**kwargs)
             try:
                 self.token_count += resp.usage.total_tokens
             except Exception:
@@ -882,13 +887,17 @@ class CustomOpenAiTranslator(ConfigGPT, CommonTranslator):
                 timeout=90,
             )
             extra_body = {"chat_template_kwargs": {"enable_thinking": False}}
-            resp = client.chat.completions.create(
-                model=self.model or CUSTOM_OPENAI_MODEL,
-                messages=_glossary_extract_messages(chosen),
-                max_tokens=1024, temperature=0, top_p=1.0,
-                seed=self._SEED if self._DETERMINISTIC else None,
-                extra_body=extra_body,
-            )
+            kwargs = {
+                "model": self.model or CUSTOM_OPENAI_MODEL,
+                "messages": _glossary_extract_messages(chosen),
+                "max_tokens": 1024,
+                "temperature": 0,
+                "top_p": 1.0,
+                "extra_body": extra_body,
+            }
+            if self._DETERMINISTIC:
+                kwargs["seed"] = self._SEED
+            resp = client.chat.completions.create(**kwargs)
             learned = _parse_glossary_extract(resp.choices[0].message.content or "")
             self._merge_learned_into_glossary(learned)
         except Exception as e:
@@ -1495,15 +1504,17 @@ class CustomOpenAiTranslator(ConfigGPT, CommonTranslator):
             {'role': 'user', 'content': pairs_block},
         ]
         extra_body = {"chat_template_kwargs": {"enable_thinking": False}}
-        response = await self.client.chat.completions.create(
-            model=self.model or CUSTOM_OPENAI_MODEL,
-            messages=messages,
-            max_tokens=256,
-            temperature=0,
-            top_p=1.0,
-            seed=self._SEED if self._DETERMINISTIC else None,
-            extra_body=extra_body,
-        )
+        request_kwargs = {
+            "model": self.model or CUSTOM_OPENAI_MODEL,
+            "messages": messages,
+            "max_tokens": 256,
+            "temperature": 0,
+            "top_p": 1.0,
+            "extra_body": extra_body,
+        }
+        if self._DETERMINISTIC:
+            request_kwargs["seed"] = self._SEED
+        response = await self.client.chat.completions.create(**request_kwargs)
         try:
             self.token_count += response.usage.total_tokens
             self.token_count_last = response.usage.total_tokens
@@ -1555,20 +1566,23 @@ class CustomOpenAiTranslator(ConfigGPT, CommonTranslator):
             temperature, top_p = self.temperature, self.top_p
             seed = None
 
-        response = await self.client.chat.completions.create(
-            model=self.model or CUSTOM_OPENAI_MODEL,
-            messages=messages,
-            max_tokens=self._MAX_TOKENS,
-            temperature=temperature,
-            top_p=top_p,
-            seed=seed,
+        request_kwargs = {
+            "model": self.model or CUSTOM_OPENAI_MODEL,
+            "messages": messages,
+            "max_tokens": self._MAX_TOKENS,
+            "temperature": temperature,
+            "top_p": top_p,
             # Chặn rò rỉ nhãn hệ thống NGAY TẦNG API (không chỉ tin prompt + regex
             # hậu xử lý): model abliterated/Qwen hay tự phun </s>, <|im_end|>… để
             # kết thúc sớm khi gặp từ nhạy cảm. Stop tokens cắt sạch tại nguồn,
             # tiết kiệm token. KHÔNG đưa marker <|n|> vào đây (đó là token hợp lệ).
-            stop=["</s>", "<|im_end|>", "<|endoftext|>", "<|eot_id|>", "<|im_start|>"],
-            extra_body=extra_body,
-        )
+            "stop": ["</s>", "<|im_end|>", "<|endoftext|>", "<|eot_id|>", "<|im_start|>"],
+            "extra_body": extra_body,
+        }
+        if seed is not None:
+            request_kwargs["seed"] = seed
+
+        response = await self.client.chat.completions.create(**request_kwargs)
 
         self.logger.debug('\n-- GPT Response (raw) --')
         self.logger.debug(response.choices[0].message.content)
