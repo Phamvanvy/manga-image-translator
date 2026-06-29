@@ -569,7 +569,10 @@ def _contains_watermark_text(text: str) -> bool:
         "danbooru",
         "dlsite",
         "bilibili",
-    )
+        "18cg",
+        "http",
+        "https",
+        "www",)
     return (
         any(tag in compact for tag in site_tags)
         or ".com" in compact

@@ -755,7 +755,7 @@ def _meaningful_translation(t) -> bool:
         return True
 
 
-_WM_SITE_TAGS = ('acg', 'pixiv', 'twitter', 'weibo', 'fanbox', 'patreon',
+_WM_SITE_TAGS = ('acg', 'pixiv', 'twitter', 'weibo', 'fanbox', 'patreon', "18cg", "https", "http", "www", "com", "net", "org",
                  'fantia', 'danbooru', 'dlsite', 'bilibili')
 
 
