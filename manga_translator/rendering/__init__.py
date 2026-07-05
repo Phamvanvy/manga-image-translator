@@ -756,7 +756,7 @@ def _meaningful_translation(t) -> bool:
 
 
 _WM_SITE_TAGS = ('acg', 'pixiv', 'twitter', 'weibo', 'fanbox', 'patreon', "18cg", "https", "http", "www", "com", "net", "org",
-                 'fantia', 'danbooru', 'dlsite', 'bilibili')
+                 'fantia', 'danbooru', 'dlsite', 'bilibili', 'pix')
 
 
 def _is_watermark_line(text: str) -> bool:

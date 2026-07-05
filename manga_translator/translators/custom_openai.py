@@ -572,7 +572,8 @@ def _contains_watermark_text(text: str) -> bool:
         "18cg",
         "http",
         "https",
-        "www",)
+        "www",
+        "pix")
     return (
         any(tag in compact for tag in site_tags)
         or ".com" in compact
