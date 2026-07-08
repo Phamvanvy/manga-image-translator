@@ -1292,14 +1292,20 @@ class CustomOpenAiTranslator(ConfigGPT, CommonTranslator):
                             f'kh\u00f4ng ph\u1ea3i tho\u1ea1i \u2014 gi\u1eef nguy\u00ean tr\u00ean \u1ea3nh, b\u1ecf d\u1ecbch.')
                         cleaned_translations[i] = src
                     elif _store.get(src.strip()) == "title":
-                        # [title] = ti\u00eau \u0111\u1ec1/ch\u1eef trang tr\u00ed/con d\u1ea5u \u2014 OCR c\u1ee7a ch\u1eef c\u00e1ch
-                        # \u0111i\u1ec7u th\u01b0\u1eddng l\u00e0 chu\u1ed7i r\u00e1c, "b\u1ea3n d\u1ecbch" ch\u1ec9 ra ch\u1eef to v\u00f4 ngh\u0129a
-                        # \u0111\u00e8 artwork \u2192 xo\u00e1 nh\u01b0 watermark, k\u1ec3 c\u1ea3 khi model l\u1ee1 k\u00e8m d\u1ecbch.
-                        # NH\u01afNG model hay d\u00e1n nh\u1ea7m [title] cho L\u1edcI D\u1eaaN vi\u1ebft th\u01b0 ph\u00e1p
-                        # (vd "\u4e8e\u9006\u661f\u4e4b\u4e0b\u4e3e\u8d77\u4e49\u65d7" b\u1ecb xo\u00e1 tr\u1eafng m\u1ea5t n\u1ed9i dung truy\u1ec7n).
-                        # Ngu\u1ed3n KH\u00d4NG c\u00f3 d\u1ea5u hi\u1ec7u ti\u00eau \u0111\u1ec1 \u2192 GI\u1eee NGUY\u00caN ch\u1eef g\u1ed1c tr\u00ean
-                        # \u1ea3nh (thi\u1ebfu b\u1ea3n d\u1ecbch v\u1eabn h\u01a1n xo\u00e1 m\u1ea5t ch\u1eef).
-                        if _title_safe_to_erase(src):
+                        # [title] = ti\u00eau \u0111\u1ec1 b\u1ed9/ch\u01b0\u01a1ng ho\u1eb7c ch\u1eef trang tr\u00ed/con d\u1ea5u.
+                        #  \u2022 Model D\u1ecaCH ti\u00eau \u0111\u1ec1 C\u00d3 NGH\u0128A (t\u00ean b\u1ed9/ch\u01b0\u01a1ng, vd "B\u1eadc Th\u1ea7y
+                        #    B\u1eaft Th\u00fa C\u01b0ng 3") \u2192 "[title] <b\u1ea3n d\u1ecbch>" (rule 6b case a):
+                        #    GI\u1eee b\u1ea3n d\u1ecbch, render l\u00ean \u1ea3nh nh\u01b0 tho\u1ea1i th\u01b0\u1eddng.
+                        #  \u2022 Model tr\u1ea3 TR\u01a0 "[title]" (r\u1ed7ng sau khi b\u00f3c nh\u00e3n) \u2192 ch\u1eef trang tr\u00ed
+                        #    thu\u1ea7n/con d\u1ea5u/OCR r\u00e1c H\u00e1n v\u00f4 ngh\u0129a: xo\u00e1 nh\u01b0 watermark (ZWJ).
+                        #    NH\u01afNG model hay d\u00e1n nh\u1ea7m [title] cho L\u1edcI D\u1eaaN vi\u1ebft th\u01b0 ph\u00e1p
+                        #    (vd "\u4e8e\u9006\u661f\u4e4b\u4e0b\u4e3e\u8d77\u4e49\u65d7") \u2192 ngu\u1ed3n KH\u00d4NG c\u00f3 d\u1ea5u hi\u1ec7u
+                        #    ti\u00eau \u0111\u1ec1 th\u00ec GI\u1eee NGUY\u00caN ch\u1eef g\u1ed1c (thi\u1ebfu b\u1ea3n d\u1ecbch h\u01a1n xo\u00e1 m\u1ea5t ch\u1eef).
+                        if not _is_effectively_empty(cleaned_translations[i]):
+                            self.logger.info(
+                                f'[title] segment {i + 1} c\u00f3 b\u1ea3n d\u1ecbch '
+                                f'"{cleaned_translations[i][:24]}" \u2014 gi\u1eef, render l\u00ean \u1ea3nh.')
+                        elif _title_safe_to_erase(src):
                             cleaned_translations[i] = "\u200d"
                         else:
                             self.logger.warning(
