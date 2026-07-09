@@ -1370,7 +1370,12 @@ def resize_regions_to_font_size(img: np.ndarray, text_regions: List['TextBlock']
     body_regions = []
     for r in text_regions:
         r._font_kind = _classify_region(r)  # cache — dispatch() dùng lại khi chọn font
-        if r._font_kind in _BODY_KINDS and r.font_size > 0:
+        # col-keep (cột dọc CJK dài, vd tiêu đề/thư pháp) đã tự GHÌM cỡ chữ theo
+        # footprint cột riêng của nó (xem nhánh col-keep phía trên) — cỡ đó KHÔNG
+        # so sánh được với bong bóng thoại thường. Gộp vào median body sẽ kéo nó
+        # tụt xuống cỡ thoại bé (vd 212 → 24) và sập cả layout cột. Loại khỏi
+        # nhóm đồng bộ, giữ nguyên như vòng box-fit đã bảo vệ (dòng ~1354).
+        if r._font_kind in _BODY_KINDS and r.font_size > 0 and not getattr(r, '_col_keep', False):
             body_regions.append(r)
     fs_min = max(1, font_size_minimum)
 
