@@ -895,6 +895,28 @@ class CustomOpenAiTranslator(ConfigGPT, CommonTranslator):
         except Exception as e:
             self.logger.warning(f'[glossary] bỏ qua đẩy global ({e}).')
 
+    def _reload_global_terms(self):
+        """Nạp LẠI các mục ĐÃ DUYỆT từ kho GLOBAL (SQLite) GIỮA CHỪNG lần dịch, để
+        thay đổi user vừa duyệt/sửa/tắt ở tab 'Glossary chung' áp cho các ảnh SAU
+        mà KHÔNG cần dịch lại. Re-merge với per-bộ (per-bộ thắng khi trùng zh) rồi
+        build lại prompt block. So sánh trước để tránh rebuild vô ích. Nuốt mọi lỗi
+        — không bao giờ làm hỏng luồng dịch."""
+        if not _global_glossary_enabled():
+            return
+        try:
+            fresh = _load_global_glossary_terms()
+        except Exception:
+            return
+        if fresh == getattr(self, "_global_terms", []):
+            return  # kho global không đổi → khỏi rebuild
+        self._global_terms = fresh
+        _per_terms, self._glossary_notes = _load_glossary(self._glossary_path)
+        self._glossary_terms = _merge_glossary_terms(_per_terms, self._global_terms)
+        self._glossary_block = _glossary_prompt_block(self._glossary_terms, self._glossary_notes)
+        self.logger.info(
+            f'[glossary] nạp lại kho GLOBAL giữa chừng: {len(self._global_terms)} '
+            f'mục đã duyệt (áp cho các ảnh sau).')
+
     async def _maybe_flush_glossary(self, force: bool = False):
         """Gọi sau mỗi ảnh. Flush khi đủ _GLOSSARY_FLUSH_EVERY ảnh (hoặc force).
         Dùng client ASYNC (đang trong event loop). Nuốt mọi lỗi."""
@@ -904,6 +926,9 @@ class CustomOpenAiTranslator(ConfigGPT, CommonTranslator):
         if not force and self._pages_since_flush < self._GLOSSARY_FLUSH_EVERY:
             return
         self._pages_since_flush = 0
+        # Trước khi trích tên mới: nạp lại kho global (user có thể vừa duyệt/sửa ở
+        # tab Glossary chung) để mục mới duyệt áp NGAY cho các ảnh còn lại.
+        self._reload_global_terms()
         try:
             chosen, n_uniq, capped = self._drain_flush_batch()
             if not chosen:
