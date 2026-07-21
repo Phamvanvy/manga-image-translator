@@ -189,6 +189,50 @@ def _glossary_path() -> str | None:
     return p or None
 
 
+# ── LỌC RÁC glossary ─────────────────────────────────────────────────────────
+# Bộ tự học hay nuốt nhầm từ thông thường / đại từ / chữ đơn / OCR lỗi. Prompt
+# extractor đã dặn "đừng lấy" nhưng model vẫn lọt → cần chốt chặn CỨNG bằng luật.
+# Áp ở CẢ 2 đầu: lúc trích (không học vào) và lúc nạp (bỏ qua mục rác cũ trong
+# file) → hệ tự lành, không cần dọn tay lại sau mỗi lần nhiễm.
+#
+# Danh từ riêng thật (tên nhân vật, môn phái, địa danh, cấp bậc, chiêu, tổ chức)
+# gần như luôn ≥ 2 ký tự Hán và KHÔNG nằm trong danh sách chặn dưới đây. Mục nào
+# muốn giữ dù trùng luật → thêm tay vào file với @keep ở cuối dòng (xem _parse).
+_GLOSSARY_STOPWORDS = frozenset({
+    # đại từ nhân xưng
+    "你", "我", "他", "她", "它", "您", "你们", "我们", "他们", "她们", "咱们",
+    "吾辈", "吾辈档模", "本人", "人家",
+    # quan hệ / xưng hô gia đình
+    "弟弟", "哥哥", "姐姐", "妹妹", "妈妈", "麻麻", "爸爸", "爹", "娘", "儿子",
+    "女儿", "儿媳妇", "母子", "母女", "老公", "老婆", "老头", "老头一", "老太婆",
+    "主人", "主主人", "宿主", "大人", "小子", "小姐姐", "小兄弟", "小伙纸",
+    "小爷", "少妇", "心妇", "儿媳妇", "小猫咪",
+    # mô tả / chửi / thô tục (là style, không phải danh từ riêng)
+    "冤种", "奴隶", "尼玛", "贱人", "骚货", "死渣男", "大鸡巴", "巨乳", "巨乳怪",
+    "外国妞", "外国小少妇", "瓜摊老板", "老逼", "老逼登",
+    # từ thông thường / cảm thán / OCR lỗi rõ
+    "不要", "兽", "浴血", "疯狂乱抓", "呦呦", "奶一口", "安全", "安 全", "女全",
+    "千死", "东京", "原优", "小",
+})
+
+
+def _is_learnable_term(zh: str, vi: str) -> bool:
+    """True nếu (zh→vi) đáng khoá vào glossary. Chặn: chữ Hán đơn (thay lung tung
+    khắp nơi), stopword thông dụng, và vi rỗng/không có ký tự Hán ở zh."""
+    if not zh or not vi:
+        return False
+    if not _CHINESE_RE.search(zh):
+        return False
+    if zh in _GLOSSARY_STOPWORDS:
+        return False
+    # Chữ Hán ĐƠN quá mơ hồ → loại (vd 王/于/九/直/兽/李 thay nhầm trong mọi từ
+    # ghép chứa nó). Dùng độ dài zh (không chỉ đếm Hán) để mã cấp bậc lai Latin
+    # như G级/D级/E级 vẫn được giữ.
+    if len(zh.strip()) < 2:
+        return False
+    return True
+
+
 def _parse_glossary(text: str):
     """Trả (terms, notes): terms = list[(zh, vi)] đã khử trùng theo zh (mục đầu
     thắng), sắp DÀI→NGẮN để replace cụm dài trước (青云宗 trước 青云); notes =
@@ -207,9 +251,15 @@ def _parse_glossary(text: str):
             continue
         if "=>" not in line:
             continue
+        # '@keep' cuối dòng = người dùng cố ý giữ dù trùng luật lọc (vd tên riêng
+        # 1 chữ). Bỏ cờ ra khỏi vi trước khi chốt.
+        keep = False
+        if line.lower().rstrip().endswith("@keep"):
+            keep = True
+            line = line[: line.lower().rstrip().rfind("@keep")].rstrip()
         zh, _, vi = line.partition("=>")
         zh, vi = zh.strip(), vi.strip()
-        if zh and vi and zh not in seen:
+        if zh and vi and zh not in seen and (keep or _is_learnable_term(zh, vi)):
             seen.add(zh)
             terms.append((zh, vi))
     terms.sort(key=lambda t: len(t[0]), reverse=True)
@@ -314,7 +364,7 @@ def _parse_glossary_extract(out: str):
             continue
         zh, _, vi = line.partition("=>")
         zh, vi = zh.strip(), vi.strip()
-        if zh and vi and _CHINESE_RE.search(zh) and zh not in seen:
+        if zh and vi and zh not in seen and _is_learnable_term(zh, vi):
             seen.add(zh)
             res.append((zh, vi))
     return res
@@ -948,10 +998,15 @@ class CustomOpenAiTranslator(ConfigGPT, CommonTranslator):
             text = '…' + text[-self._CONTEXT_MAX_CHARS:]
         return (
             "\n\nSTORY CONTEXT (recent dialogue from previous pages, Vietnamese — "
-            "REFERENCE ONLY). Use it to keep character names, pronouns, tone and "
-            "vocabulary consistent, and to choose words that fit the ongoing scene. "
-            "NEVER translate, repeat or output these lines — only output the <|n|> "
-            "segments for the new text:\n" + text
+            "REFERENCE ONLY, for CONSISTENCY of character names, pronouns and "
+            "recurring terminology). This context must NOT change how you translate "
+            "the new text: translate each <|n|> segment LITERALLY and completely — "
+            "do NOT paraphrase, do NOT drop, add or merge words, do NOT swap the "
+            "subject/speaker, and do NOT rewrite meaning to 'fit the scene'. If the "
+            "context and the literal meaning of the new segment conflict, the "
+            "literal meaning of the new segment WINS. NEVER translate, repeat or "
+            "output these context lines — only output the <|n|> segments for the "
+            "new text:\n" + text
         )
 
     def _is_translation_invalid(self, query: str, trans: str) -> bool:
