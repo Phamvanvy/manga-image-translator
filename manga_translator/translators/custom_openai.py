@@ -747,6 +747,14 @@ class CustomOpenAiTranslator(ConfigGPT, CommonTranslator):
     # tone consistent and pick scene-appropriate wording across the chapter.
     _CONTEXT_MAX_PAGES = 10    # nhớ nội dung ~10 ảnh gần nhất
     _CONTEXT_MAX_CHARS = 1200  # giới hạn cứng độ dài context bơm vào prompt (tránh phình token)
+    # STORY CONTEXT giữ nhất quán xuyên trang NHƯNG hay kéo XƯNG HÔ trang trước đè
+    # lên câu hiện tại → lệch so với bản model "trần" (vd ép ta/con thay vì anh/em).
+    # Mặc định TẮT để bám sát model; tên riêng vẫn nhất quán nhờ glossary (khoá
+    # cứng). Bật lại bằng env MIT_STORY_CONTEXT=1 nếu muốn ưu tiên nhất quán cảnh.
+    @staticmethod
+    def _story_context_enabled() -> bool:
+        return (os.environ.get("MIT_STORY_CONTEXT", "0") or "0").strip().lower() \
+            not in ("0", "false", "off", "no", "")
 
     # Cứ mỗi N ảnh thì trích tên mới ghi vào glossary & reload (để ảnh sau —
     # kể cả trong oneshot 1-folder — được khoá tên học từ ảnh trước). Không chờ
@@ -983,7 +991,12 @@ class CustomOpenAiTranslator(ConfigGPT, CommonTranslator):
         models echoing it as translation content). Helps the model keep names,
         pronouns, tone and vocabulary consistent and choose words that fit the
         ongoing scene across the whole chapter.
+
+        TẮT theo mặc định (bám model trần) — bật lại bằng env MIT_STORY_CONTEXT=1.
+        Tên riêng vẫn nhất quán nhờ glossary khoá cứng, không cần context.
         """
+        if not self._story_context_enabled():
+            return ''
         if not self._recent_context:
             return ''
         flat: List[str] = []
